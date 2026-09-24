@@ -6,16 +6,11 @@ coverage/
 *.log
 .env*
 !.env.example
-# Python virtual environments
-venv/
-.venv/
-**/venv/
-**/.venv/
 
-# Python cache
-__pycache__/
-*.pyc
-
-# Node dependencies
+# local runtime files
 node_modules/
-**/node_modules/
+backend/venv/
+backend/.env
+backend/*.db
+__pycache__/
+.env.local

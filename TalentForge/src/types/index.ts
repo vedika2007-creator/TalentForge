@@ -79,7 +79,7 @@ export interface VerificationRequest {
   skillOrProjectTitle: string;
   type: 'project' | 'skill_assessment' | 'certificate';
   submittedAt: string;
-  status: 'pending' | 'approved' | 'changes_requested';
+  status: 'pending' | 'approved' | 'changes_requested' | 'rejected';
   submittedEvidence: {
     githubRepo?: string;
     projectReportUrl?: string;

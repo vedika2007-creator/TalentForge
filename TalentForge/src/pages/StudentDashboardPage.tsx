@@ -266,9 +266,13 @@ export const StudentDashboardPage: React.FC<{ user: AuthUser; onNavigate: (path:
                                 <ShieldCheck className="w-3 h-3 text-emerald-600" />
                                 Faculty Verified
                               </span>
-                            ) : req?.status === 'changes_requested' ? (
+                            ) : req?.status === 'rejected' ? (
                               <span className="text-[10px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full">
-                                Revisions Requested
+                                Declined by Faculty
+                              </span>
+                            ) : req?.status === 'changes_requested' ? (
+                              <span className="text-[10px] font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-full">
+                                Changes Requested
                               </span>
                             ) : (
                               <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
@@ -307,7 +311,7 @@ export const StudentDashboardPage: React.FC<{ user: AuthUser; onNavigate: (path:
                         <p className="text-[11px] text-slate-500 pt-2 border-t border-slate-100">
                           Verified by <strong>{project.verifiedBy}</strong> on {project.verificationDate}
                         </p>
-                      ) : req?.status === 'changes_requested' && req.notes ? (
+                      ) : (req?.status === 'changes_requested' || req?.status === 'rejected') && req.notes ? (
                         <p className="text-[11px] text-rose-700 pt-2 border-t border-slate-100">
                           <strong>{req.reviewerName || 'Faculty'}:</strong> {req.notes}
                         </p>

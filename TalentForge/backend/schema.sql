@@ -172,7 +172,7 @@ CREATE TABLE verification_requests (
     title TEXT NOT NULL,
     verification_type TEXT NOT NULL CHECK (verification_type IN ('project','skill_assessment','certificate')),
     submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','changes_requested')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','changes_requested','rejected')),
     reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     reviewed_at TEXT,
     notes TEXT

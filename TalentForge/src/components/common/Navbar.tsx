@@ -12,6 +12,49 @@ interface NavbarProps {
   onLogout: () => void;
 }
 
+const PUBLIC_NAV = [
+  { label: 'Home', path: '/' },
+  { label: 'Discover Talent', path: '/discover' },
+  { label: 'Projects', path: '/projects' },
+  { label: 'Skills & Evidence', path: '/skills-evidence' },
+  { label: 'Collaborate', path: '/collaborate' },
+  { label: 'How It Works', path: '/how-it-works' },
+];
+
+/** Each role gets its own workspace navigation once signed in. */
+const ROLE_NAV: Record<string, { label: string; path: string }[]> = {
+  student: [
+    { label: 'My Dashboard', path: '/student' },
+    { label: 'Projects', path: '/projects' },
+    { label: 'Collaborate', path: '/collaborate' },
+    { label: 'Skills & Evidence', path: '/skills-evidence' },
+  ],
+  teacher: [
+    { label: 'Verification Queue', path: '/teacher' },
+    { label: 'Students', path: '/discover' },
+    { label: 'Projects', path: '/projects' },
+    { label: 'Collaborate', path: '/collaborate' },
+  ],
+  recruiter: [
+    { label: 'Candidates', path: '/recruiter' },
+    { label: 'Discover Talent', path: '/discover' },
+    { label: 'Projects', path: '/projects' },
+  ],
+  admin: [
+    { label: 'Admin Console', path: '/admin' },
+    { label: 'Verifications', path: '/teacher' },
+    { label: 'Students', path: '/discover' },
+    { label: 'Projects', path: '/projects' },
+  ],
+};
+
+const ROLE_ACCENT: Record<string, string> = {
+  student: 'bg-blue-600',
+  teacher: 'bg-purple-600',
+  recruiter: 'bg-cyan-600',
+  admin: 'bg-teal-600',
+};
+
 const ROLE_BADGE: Record<string, string> = {
   student: 'text-blue-700 bg-blue-50',
   teacher: 'text-purple-700 bg-purple-50',
@@ -40,14 +83,8 @@ export const Navbar: React.FC<NavbarProps> = ({
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  const navLinks = [
-    { label: 'Home', path: '/' },
-    { label: 'Discover Talent', path: '/discover' },
-    { label: 'Projects', path: '/projects' },
-    { label: 'Skills & Evidence', path: '/skills-evidence' },
-    { label: 'Collaborate', path: '/collaborate' },
-    { label: 'How It Works', path: '/how-it-works' },
-  ];
+  const navLinks = user ? ROLE_NAV[user.role] : PUBLIC_NAV;
+  const homePath = user ? `/${user.role}` : '/';
 
   return (
     <header
@@ -57,11 +94,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           : 'bg-white border-b border-slate-100 py-4'
       }`}
     >
+      {user && <div className={`absolute top-0 inset-x-0 h-1 ${ROLE_ACCENT[user.role]}`} />}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between">
         {/* Zone 1: Brand Wordmark (Single text element with custom TF logo mark) */}
         <div className="flex items-center gap-3">
           <button
-            onClick={() => onNavigate('/')}
+            onClick={() => onNavigate(homePath)}
             className="group flex items-center gap-2.5 text-left focus:outline-none"
           >
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center shadow-md shadow-blue-500/20 group-hover:shadow-blue-500/30 transition-all">
@@ -98,7 +136,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           })}
 
           {/* Portals Quick Selector Dropdown */}
-          <div className="relative">
+          {!user && <div className="relative">
             <button
               onClick={() => setPortalsDropdown(!portalsDropdown)}
               onBlur={() => setTimeout(() => setPortalsDropdown(false), 200)}
@@ -139,7 +177,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </button>
               </div>
             )}
-          </div>
+          </div>}
         </nav>
 
         {/* Zone 3: Actions (Search, Sign In, Create Profile) */}
@@ -248,7 +286,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             ))}
           </div>
 
-          <div className="pt-3 border-t border-slate-100">
+          {!user && <div className="pt-3 border-t border-slate-100">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 px-3 mb-2">
               Platform Portals
             </p>
@@ -278,7 +316,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <Users className="w-3.5 h-3.5" /> Admin
               </button>
             </div>
-          </div>
+          </div>}
 
           <div className="pt-2">
             {user ? (

@@ -214,7 +214,7 @@ class ShortlistIn(BaseModel):
 
 
 class VerificationUpdate(BaseModel):
-    status: Literal["approved", "changes_requested"]
+    status: Literal["approved", "changes_requested", "rejected"]
     notes: Optional[str] = None
 
 
@@ -607,6 +607,8 @@ def update_verification(request_id: str, data: VerificationUpdate, user=Depends(
     req = one(conn, "SELECT * FROM verification_requests WHERE id=? OR external_id=?", (request_id, request_id))
     if not req:
         raise HTTPException(404, "Verification request not found")
+    if data.status == "rejected" and not (data.notes or "").strip():
+        raise HTTPException(400, "A reason is required to decline a submission")
     note = data.notes or ("Faculty verification confirmed. Evidence verified against university rubrics."
                           if data.status == "approved" else "Changes requested by faculty mentor.")
     conn.execute("UPDATE verification_requests SET status=?, notes=?, reviewed_by=?, reviewed_at=? WHERE id=?",

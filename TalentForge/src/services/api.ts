@@ -35,9 +35,13 @@ export class ApiError extends Error {
   }
 }
 
+// Sessions live in sessionStorage so each browser tab can be signed in as a different role
+// (e.g. a student in one tab and faculty in another) without overwriting each other.
+const store = window.sessionStorage;
+
 function getToken() {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return store.getItem(TOKEN_KEY);
   } catch {
     return null;
   }
@@ -45,7 +49,7 @@ function getToken() {
 
 export function getStoredUser(): AuthUser | null {
   try {
-    const raw = localStorage.getItem(USER_KEY);
+    const raw = store.getItem(USER_KEY);
     return raw ? (JSON.parse(raw) as AuthUser) : null;
   } catch {
     return null;
@@ -55,11 +59,11 @@ export function getStoredUser(): AuthUser | null {
 function setSession(token: string | null, user: AuthUser | null) {
   try {
     if (token && user) {
-      localStorage.setItem(TOKEN_KEY, token);
-      localStorage.setItem(USER_KEY, JSON.stringify(user));
+      store.setItem(TOKEN_KEY, token);
+      store.setItem(USER_KEY, JSON.stringify(user));
     } else {
-      localStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(USER_KEY);
+      store.removeItem(TOKEN_KEY);
+      store.removeItem(USER_KEY);
     }
   } catch {
     // storage unavailable — session lives only in memory for this page load
@@ -166,7 +170,7 @@ export const talentforgeApi = {
   getVerificationRequests: (filters?: { status?: string; studentId?: string }) =>
     request<VerificationRequest[]>(`/verifications${qs({ ...filters })}`),
 
-  updateVerificationStatus: (requestId: string, status: 'approved' | 'changes_requested', notes?: string) =>
+  updateVerificationStatus: (requestId: string, status: 'approved' | 'changes_requested' | 'rejected', notes?: string) =>
     request<VerificationRequest>(`/verifications/${encodeURIComponent(requestId)}`, {
       method: 'PATCH',
       body: JSON.stringify({ status, notes }),

@@ -15,17 +15,45 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { talentforgeApi } from '../services/api';
-import { AuthUser } from '../types';
+import { AuthUser, VerificationRequest } from '../types';
 import { useApi } from '../hooks/useApi';
 import { timeAgo } from '../lib/format';
 import { Avatar, EmptyState, ErrorState, LoadingState } from '../components/common/ui';
 import confetti from 'canvas-confetti';
 
+type FilterKey = 'all' | VerificationRequest['status'];
+
+const FILTERS: { key: FilterKey; label: string }[] = [
+  { key: 'pending', label: 'Pending' },
+  { key: 'approved', label: 'Accepted' },
+  { key: 'rejected', label: 'Declined' },
+  { key: 'changes_requested', label: 'Changes Requested' },
+  { key: 'all', label: 'All' },
+];
+
+const STATUS_STYLE: Record<VerificationRequest['status'], { label: string; className: string; icon: React.ElementType }> = {
+  pending: { label: 'Awaiting Review', className: 'text-amber-700 bg-amber-50', icon: Clock },
+  approved: { label: 'Accepted', className: 'text-emerald-700 bg-emerald-50', icon: ShieldCheck },
+  rejected: { label: 'Declined', className: 'text-rose-700 bg-rose-50', icon: X },
+  changes_requested: { label: 'Changes Requested', className: 'text-slate-700 bg-slate-100', icon: AlertCircle },
+};
+
+const StatusBadge: React.FC<{ status: VerificationRequest['status'] }> = ({ status }) => {
+  const { label, className, icon: Icon } = STATUS_STYLE[status];
+  return (
+    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1 ${className}`}>
+      <Icon className="w-3.5 h-3.5" />
+      {label}
+    </span>
+  );
+};
+
 export const TeacherDashboardPage: React.FC<{ user: AuthUser; onNavigate: (path: string) => void }> = ({ user }) => {
   const queue = useApi(() => talentforgeApi.getVerificationRequests(), []);
   const cohort = useApi(() => talentforgeApi.getStudents(), []);
   const requests = queue.data || [];
-  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'approved' | 'changes_requested'>('pending');
+  const [activeFilter, setActiveFilter] = useState<FilterKey>('pending');
+  const [reopened, setReopened] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
@@ -37,11 +65,17 @@ export const TeacherDashboardPage: React.FC<{ user: AuthUser; onNavigate: (path:
     return () => clearTimeout(t);
   }, [notice]);
 
-  const review = async (id: string, name: string, status: 'approved' | 'changes_requested') => {
+  const review = async (id: string, name: string, status: 'approved' | 'changes_requested' | 'rejected') => {
+    if (status === 'rejected' && !reviewNotes[id]?.trim()) {
+      setNotice({ tone: 'error', text: 'Add a reason in the review note before declining.' });
+      return;
+    }
     setBusyId(id);
     try {
       const updated = await talentforgeApi.updateVerificationStatus(id, status, reviewNotes[id]?.trim() || undefined);
       queue.setData(requests.map((r) => (r.id === id ? updated : r)));
+      setReopened((ids) => ids.filter((x) => x !== id));
+      setReviewNotes((n) => ({ ...n, [id]: '' }));
       cohort.reload();
       if (status === 'approved') {
         setNotice({ tone: 'ok', text: `Successfully verified capability for ${name}!` });
@@ -50,6 +84,8 @@ export const TeacherDashboardPage: React.FC<{ user: AuthUser; onNavigate: (path:
         } catch {
           // ignore
         }
+      } else if (status === 'rejected') {
+        setNotice({ tone: 'ok', text: `Submission from ${name} was declined.` });
       } else {
         setNotice({ tone: 'ok', text: `Revision comments sent to ${name}.` });
       }
@@ -129,7 +165,7 @@ export const TeacherDashboardPage: React.FC<{ user: AuthUser; onNavigate: (path:
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h2 className="text-lg font-bold text-slate-900">
-                Pending Verification Requests
+                Verification Requests
               </h2>
               <p className="text-xs text-slate-500">
                 Inspect student repository commits and project reports against technical rubrics.
@@ -137,33 +173,18 @@ export const TeacherDashboardPage: React.FC<{ user: AuthUser; onNavigate: (path:
             </div>
 
             {/* Filter controls */}
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl">
+            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl overflow-x-auto">
+              {FILTERS.map(({ key, label }) => (
                 <button
-                  onClick={() => setActiveFilter('all')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
-                    activeFilter === 'all' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                  key={key}
+                  onClick={() => setActiveFilter(key)}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                    activeFilter === key ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
                   }`}
                 >
-                  All ({requests.length})
+                  {label} ({key === 'all' ? requests.length : countBy(key)})
                 </button>
-                <button
-                  onClick={() => setActiveFilter('pending')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
-                    activeFilter === 'pending' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                  }`}
-                >
-                  Pending ({countBy('pending')})
-                </button>
-                <button
-                  onClick={() => setActiveFilter('approved')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
-                    activeFilter === 'approved' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                  }`}
-                >
-                  Approved
-                </button>
-              </div>
+              ))}
             </div>
           </div>
 
@@ -204,24 +225,7 @@ export const TeacherDashboardPage: React.FC<{ user: AuthUser; onNavigate: (path:
                     <span className="text-xs font-mono text-slate-400">
                       {timeAgo(req.submittedAt)}
                     </span>
-                    {req.status === 'approved' && (
-                      <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full flex items-center gap-1">
-                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                        Approved
-                      </span>
-                    )}
-                    {req.status === 'pending' && (
-                      <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5 text-amber-600" />
-                        Awaiting Sign-off
-                      </span>
-                    )}
-                    {req.status === 'changes_requested' && (
-                      <span className="text-xs font-semibold text-slate-700 bg-slate-100 px-2.5 py-1 rounded-full flex items-center gap-1">
-                        <AlertCircle className="w-3.5 h-3.5 text-slate-500" />
-                        Revision Requested
-                      </span>
-                    )}
+                    <StatusBadge status={req.status} />
                   </div>
                 </div>
 
@@ -276,23 +280,58 @@ export const TeacherDashboardPage: React.FC<{ user: AuthUser; onNavigate: (path:
                 )}
 
                 {/* Actions */}
-                {req.status === 'pending' && (
-                  <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-end gap-3 border-t border-slate-100">
-                    <input value={reviewNotes[req.id] || ''} onChange={(e) => setReviewNotes({ ...reviewNotes, [req.id]: e.target.value })} placeholder="Optional review note..." className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-slate-200 focus:outline-none focus:border-purple-600" />
+                {(req.status === 'pending' || reopened.includes(req.id)) ? (
+                  <div className="pt-3 space-y-2 border-t border-slate-100">
+                    <textarea
+                      rows={2}
+                      value={reviewNotes[req.id] || ''}
+                      onChange={(e) => setReviewNotes({ ...reviewNotes, [req.id]: e.target.value })}
+                      placeholder="Review note for the student (required when declining)..."
+                      className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 focus:outline-none focus:border-purple-600 resize-none"
+                    />
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      {reopened.includes(req.id) && (
+                        <button
+                          onClick={() => setReopened(reopened.filter((id) => id !== req.id))}
+                          className="px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100 rounded-lg mr-auto"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                      <button
+                        disabled={busyId === req.id}
+                        onClick={() => review(req.id, req.studentName, 'changes_requested')}
+                        className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-1.5"
+                      >
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        Request Changes
+                      </button>
+                      <button
+                        disabled={busyId === req.id}
+                        onClick={() => review(req.id, req.studentName, 'rejected')}
+                        className="px-3.5 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-1.5"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        Decline
+                      </button>
+                      <button
+                        disabled={busyId === req.id}
+                        onClick={() => review(req.id, req.studentName, 'approved')}
+                        className="px-4 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        Accept & Verify
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="pt-2 flex items-center justify-between border-t border-slate-100 text-[11px] text-slate-400">
+                    <span>{req.reviewedAt ? `Reviewed ${timeAgo(req.reviewedAt).toLowerCase()}` : ''}</span>
                     <button
-                      disabled={busyId === req.id}
-                      onClick={() => review(req.id, req.studentName, 'changes_requested')}
-                      className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
+                      onClick={() => setReopened([...reopened, req.id])}
+                      className="font-semibold text-purple-700 hover:underline"
                     >
-                      Request Revisions
-                    </button>
-                    <button
-                      disabled={busyId === req.id}
-                      onClick={() => review(req.id, req.studentName, 'approved')}
-                      className="px-4 py-1.5 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
-                    >
-                      <ShieldCheck className="w-3.5 h-3.5" />
-                      <span>Verify & Sign Endorsement</span>
+                      Change decision
                     </button>
                   </div>
                 )}

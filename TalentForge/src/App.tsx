@@ -63,6 +63,20 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
+  // Signed-in users live in their own role workspace: the public landing pages and
+  // other roles' portals send them back to their own dashboard.
+  useEffect(() => {
+    if (!user) return;
+    const home = `/${user.role}`;
+    const portalRole = PORTAL_ROLES[currentPath];
+    const adminOnTeacher = portalRole === 'teacher' && user.role === 'admin';
+    const isMarketing = currentPath === '/' || currentPath === '/how-it-works';
+    if (isMarketing || (portalRole && portalRole !== user.role && !adminOnTeacher)) {
+      window.history.replaceState({}, '', home);
+      setCurrentPath(home);
+    }
+  }, [user, currentPath]);
+
   const openAuthModal = (role: string = 'student', tab: 'signin' | 'register' = 'signin') => {
     setAuthModalState({ isOpen: true, initialRole: role, initialTab: tab });
   };

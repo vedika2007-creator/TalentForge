@@ -31,12 +31,39 @@ def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
+def migrate(conn: sqlite3.Connection) -> None:
+    """Upgrade databases created by older versions of schema.sql in place."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='verification_requests'").fetchone()
+    if row and "'rejected'" not in row["sql"]:
+        # SQLite cannot alter a CHECK constraint: rebuild the table with the 'rejected' status allowed.
+        views = conn.execute("SELECT sql FROM sqlite_master WHERE type='view'").fetchall()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executescript(
+            "BEGIN;"
+            + "".join(f"DROP VIEW IF EXISTS {v['sql'].split()[2]};" for v in views)
+            + row["sql"].replace("verification_requests", "verification_requests_new", 1)
+            .replace("'changes_requested')", "'changes_requested','rejected')")
+            + ";INSERT INTO verification_requests_new SELECT * FROM verification_requests;"
+            "DROP TABLE verification_requests;"
+            "ALTER TABLE verification_requests_new RENAME TO verification_requests;"
+            "CREATE INDEX IF NOT EXISTS idx_verification_status ON verification_requests(status);"
+            "CREATE INDEX IF NOT EXISTS idx_verification_student ON verification_requests(student_id);"
+            + "".join(v["sql"] + ";" for v in views)
+            + "COMMIT;"
+        )
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def init_db(reset: bool = False) -> None:
-    """Create the schema and seed data. With reset=False this is a no-op if the DB already exists."""
+    """Create the schema and seed data. With reset=False an existing DB is only migrated."""
     if DATABASE_PATH.exists() and not reset:
-        with connect() as conn:
+        conn = connect()
+        try:
             if conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").fetchone():
+                migrate(conn)
                 return
+        finally:
+            conn.close()
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = connect()
     try:
