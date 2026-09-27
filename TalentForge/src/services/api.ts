@@ -9,6 +9,7 @@ import {
   Candidate,
   ChatMessage,
   CollaborationPost,
+  CollabJoinRequest,
   Conversation,
   Interview,
   Job,
@@ -272,7 +273,13 @@ export const talentforgeApi = {
       tags: p.tags,
     })),
 
-  joinCollaboration: (postId: string) => request<CollaborationPost>(`/collaborations/${enc(postId)}/join`, post()),
+  /** Sends a join request; the creator must accept before the user becomes a member. */
+  requestToJoinCollaboration: (postId: string, message?: string) =>
+    request<CollaborationPost>(`/collaborations/${enc(postId)}/join`, post({ message })),
+  withdrawCollaborationRequest: (postId: string) => request<CollaborationPost>(`/collaborations/${enc(postId)}/join`, del),
+  getCollaborationRequests: (postId: string) => request<CollabJoinRequest[]>(`/collaborations/${enc(postId)}/requests`),
+  decideCollaborationRequest: (requestId: string, accept: boolean) =>
+    request<CollabJoinRequest[]>(`/collaboration-requests/${enc(requestId)}/${accept ? 'accept' : 'decline'}`, post()),
 
   // --- Admin ---
   getUsers: () => request<AuthUser[]>('/admin/users'),

@@ -167,5 +167,31 @@ check("admin reports", s == 200 and rep["applicationsByStatus"].get("selected", 
 s, j = call("PATCH", f"/jobs/{job['id']}", admin_token, {"is_active": False})
 check("admin can close a job", s == 200 and not j["isActive"], j)
 
+# 8. Collaboration: joining needs the creator's permission
+s, post = call("POST", "/collaborations", student_token, {"title": f"Hackathon team {stamp}", "description": "x", "domain": "AI",
+                                                          "max_members": 3, "looking_for": ["Backend"], "tags": ["AI"]})
+check("student creates a collaboration post", s == 201 and post["isOwner"] and post["currentMembers"] == 1, post)
+rohan_token, _ = login("rohan@talentforge.dev")
+s, _ = call("POST", f"/collaborations/{post['id']}/join", recruiter_token, {})
+check("recruiter cannot join student collaborations", s == 403, s)
+s, p2 = call("POST", f"/collaborations/{post['id']}/join", rohan_token, {"message": "I can do backend"})
+check("join creates a pending request, not membership",
+      s == 200 and p2["myRequestStatus"] == "pending" and not p2["isMember"] and p2["currentMembers"] == 1, p2)
+s, _ = call("POST", f"/collaborations/{post['id']}/join", rohan_token, {})
+check("duplicate join request rejected", s == 409, s)
+s, _ = call("GET", f"/collaborations/{post['id']}/requests", rohan_token)
+check("only the creator can see join requests", s == 403, s)
+s, reqs = call("GET", f"/collaborations/{post['id']}/requests", student_token)
+check("creator sees the pending request", s == 200 and reqs[0]["status"] == "pending" and reqs[0]["message"] == "I can do backend", reqs)
+s, _ = call("POST", f"/collaboration-requests/{reqs[0]['id']}/accept", rohan_token)
+check("requester cannot accept their own request", s == 403, s)
+s, reqs = call("POST", f"/collaboration-requests/{reqs[0]['id']}/accept", student_token)
+check("creator accepts", s == 200 and reqs[0]["status"] == "accepted", reqs)
+s, posts = call("GET", "/collaborations", rohan_token)
+mine = next(x for x in posts if x["id"] == post["id"])
+check("accepted user becomes a member", mine["isMember"] and mine["currentMembers"] == 2, mine)
+s, notes = call("GET", "/notifications", rohan_token)
+check("requester notified of acceptance", any("You joined" in n["title"] for n in notes["items"]), notes["items"][:2])
+
 print(f"\n{len(failures)} failure(s)" if failures else "\nALL CHECKS PASSED")
 sys.exit(1 if failures else 0)

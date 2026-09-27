@@ -77,6 +77,19 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at);
 
+-- Collaboration join requests: the team creator must accept before a user becomes a member
+CREATE TABLE IF NOT EXISTS collaboration_requests (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    post_id TEXT NOT NULL REFERENCES collaboration_posts(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    message TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','declined')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    decided_at TEXT,
+    UNIQUE(post_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_collab_requests_post ON collaboration_requests(post_id, status);
+
 -- Verification queue view, extended with the skill / certificate a request refers to.
 DROP VIEW IF EXISTS pending_verifications;
 CREATE VIEW pending_verifications AS

@@ -1,6 +1,4 @@
-import json
 import os
-import sqlite3
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
@@ -9,9 +7,10 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 
-from core import (db, get_current_user, get_optional_user, issue_token, many,
+from core import (db, get_current_user, issue_token, many,
                   now_iso, one, public_user, require_roles, resolve_user)
 from database import DATABASE_PATH, hash_password, init_db
+from collaboration import router as collaboration_router
 from workflow import apply_verification_effects, notify, notify_teachers, router as workflow_router
 from serializers import (JOB_SELECT, PROJECT_SELECT, get_or_create_skill,
                          serialize_job, serialize_project, serialize_student, serialize_verification)
@@ -85,15 +84,6 @@ class ProjectIn(BaseModel):
     role: Optional[str] = "Lead Developer"
     technologies: list[str] = []
     highlights: list[str] = []
-
-
-class CollaborationIn(BaseModel):
-    title: str = Field(min_length=1)
-    description: Optional[str] = None
-    domain: Optional[str] = None
-    max_members: int = Field(default=2, gt=0)
-    looking_for: list[str] = []
-    tags: list[str] = []
 
 
 class ShortlistIn(BaseModel):
@@ -345,73 +335,6 @@ def update_verification(request_id: str, data: VerificationUpdate, user=Depends(
 # Collaboration
 # ---------------------------------------------------------------------------
 
-def serialize_collab(r: dict, user_id: Optional[str]):
-    member_ids = json.loads(r["member_ids"] or "[]")
-    return {
-        "id": r["id"],
-        "title": r["title"],
-        "description": r["description"] or "",
-        "domain": r["domain"] or "",
-        "creatorId": r["creator_id"],
-        "creatorName": r["creator_name"],
-        "creatorAvatar": r["creator_avatar"] or "",
-        "creatorRole": r["creator_headline"] or r["creator_role"].capitalize(),
-        "creatorCollege": r["creator_college"],
-        "lookingFor": json.loads(r["looking_for"] or "[]"),
-        "currentMembers": len(member_ids),
-        "maxMembers": r["max_members"],
-        "postedDate": r["posted_at"],
-        "tags": json.loads(r["tags"] or "[]"),
-        "isMember": bool(user_id and user_id in member_ids),
-    }
-
-
-COLLAB_SELECT = """
-    SELECT cp.*, u.name creator_name, u.avatar_url creator_avatar, u.role creator_role,
-        u.headline creator_headline, u.college creator_college,
-        (SELECT json_group_array(user_id) FROM collaboration_members cm WHERE cm.post_id=cp.id) member_ids,
-        (SELECT json_group_array(role_name) FROM collaboration_roles cr WHERE cr.post_id=cp.id) looking_for,
-        (SELECT json_group_array(tag) FROM collaboration_tags ct WHERE ct.post_id=cp.id) tags
-    FROM collaboration_posts cp JOIN users u ON u.id=cp.creator_id
-"""
-
-
-@app.get("/api/v1/collaborations")
-def collaborations(user=Depends(get_optional_user), conn=Depends(db)):
-    rows = many(conn, COLLAB_SELECT + " WHERE cp.is_active=1 ORDER BY cp.posted_at DESC")
-    return [serialize_collab(r, user and user["id"]) for r in rows]
-
-
-@app.post("/api/v1/collaborations", status_code=201)
-def create_collaboration(data: CollaborationIn, user=Depends(require_roles("student", "teacher")), conn=Depends(db)):
-    p = one(conn, "INSERT INTO collaboration_posts(creator_id,title,description,domain,max_members) VALUES (?,?,?,?,?) RETURNING id",
-            (user["id"], data.title, data.description, data.domain, data.max_members))
-    conn.execute("INSERT INTO collaboration_members(post_id,user_id) VALUES (?,?)", (p["id"], user["id"]))
-    for role in data.looking_for:
-        if role.strip():
-            conn.execute("INSERT INTO collaboration_roles(post_id,role_name) VALUES (?,?)", (p["id"], role.strip()))
-    for tag in {t.strip() for t in data.tags if t.strip()}:
-        conn.execute("INSERT INTO collaboration_tags(post_id,tag) VALUES (?,?)", (p["id"], tag))
-    conn.commit()
-    return serialize_collab(one(conn, COLLAB_SELECT + " WHERE cp.id=?", (p["id"],)), user["id"])
-
-
-@app.post("/api/v1/collaborations/{post_id}/join")
-def join_collaboration(post_id: str, user=Depends(get_current_user), conn=Depends(db)):
-    p = one(conn, "SELECT * FROM collaboration_posts WHERE id=? OR external_id=?", (post_id, post_id))
-    if not p:
-        raise HTTPException(404, "Post not found")
-    count = one(conn, "SELECT COUNT(*) n FROM collaboration_members WHERE post_id=?", (p["id"],))["n"]
-    if count >= p["max_members"]:
-        raise HTTPException(409, "This team is already full")
-    try:
-        conn.execute("INSERT INTO collaboration_members(post_id,user_id) VALUES (?,?)", (p["id"], user["id"]))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "You have already joined this team")
-    return serialize_collab(one(conn, COLLAB_SELECT + " WHERE cp.id=?", (p["id"],)), user["id"])
-
-
 # ---------------------------------------------------------------------------
 # Recruiters: shortlist, jobs, matching
 # ---------------------------------------------------------------------------
@@ -504,3 +427,4 @@ def admin_set_status(user_id: str, data: UserStatusIn, user=Depends(require_role
 
 
 app.include_router(workflow_router)
+app.include_router(collaboration_router)

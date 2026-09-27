@@ -114,6 +114,22 @@ export interface CollaborationPost {
   tags: string[];
   creatorId?: string;
   isMember?: boolean;
+  isOwner?: boolean;
+  /** The viewer's own join request, if any. Joining needs the creator's approval. */
+  myRequestStatus?: CollabRequestStatus | null;
+  /** Pending join requests (only non-zero for the creator). */
+  pendingRequests?: number;
+}
+
+export type CollabRequestStatus = 'pending' | 'accepted' | 'declined';
+
+export interface CollabJoinRequest {
+  id: string;
+  status: CollabRequestStatus;
+  message: string;
+  createdAt: string;
+  decidedAt: string | null;
+  user: { id: string; name: string; avatar: string | null; college: string; headline: string; role: UserRole; verifiedSkills: string[] };
 }
 
 export interface RecruiterJobRequirement {

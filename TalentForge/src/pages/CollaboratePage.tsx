@@ -1,275 +1,327 @@
 import React, { useState } from 'react';
+import { Check, Clock, Inbox, Plus, Send, UserCheck, Users, X } from 'lucide-react';
 import { talentforgeApi } from '../services/api';
 import { useApi } from '../hooks/useApi';
 import { timeAgo } from '../lib/format';
-import { Avatar, ErrorState, LoadingState } from '../components/common/ui';
-import { Users, Plus, ArrowRight, Sparkles, Check, Send, Search, X } from 'lucide-react';
-import { AuthUser } from '../types';
-import confetti from 'canvas-confetti';
+import { Avatar, EmptyState, ErrorState, LoadingState } from '../components/common/ui';
+import { Button, Field, FormError, Modal, PageHeader, Select, SkillChip, StatusPill, Tabs, TextArea, TextInput } from '../components/common/workspace';
+import { AuthUser, CollabJoinRequest, CollaborationPost } from '../types';
 
+const DOMAINS = ['AI & Machine Learning', 'Cloud & Systems', 'Web & Mobile', 'Robotics & IoT', 'Healthcare AI', 'CleanTech & IoT'];
+
+/**
+ * Collaboration hub. Joining a team is a request: the team creator reviews it and
+ * accepts or declines — nobody is added to a team without the creator's permission.
+ */
 export const CollaboratePage: React.FC<{
   user: AuthUser | null;
   onNavigate: (path: string) => void;
   onOpenAuth: (role?: string) => void;
-}> = ({ user, onOpenAuth }) => {
+}> = ({ user }) => {
   const postsApi = useApi(() => talentforgeApi.getCollaborationPosts(), [user?.id]);
   const posts = postsApi.data || [];
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [tab, setTab] = useState('explore');
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
-  // New post form
-  const [title, setTitle] = useState('');
-  const [domain, setDomain] = useState('AI & Machine Learning');
-  const [description, setDescription] = useState('');
-  const [lookingFor, setLookingFor] = useState('');
+  // Join-request dialog
+  const [joining, setJoining] = useState<CollaborationPost | null>(null);
+  const [joinMessage, setJoinMessage] = useState('');
 
-  const handleApply = async (id: string) => {
-    if (!user) return onOpenAuth('student');
+  // Creator: manage requests dialog
+  const [managing, setManaging] = useState<CollaborationPost | null>(null);
+  const [requests, setRequests] = useState<CollabJoinRequest[] | null>(null);
+
+  // Create dialog
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ title: '', domain: DOMAINS[0], description: '', lookingFor: '', maxMembers: '4' });
+
+  const replace = (updated: CollaborationPost) => postsApi.setData(posts.map((p) => (p.id === updated.id ? updated : p)));
+
+  const run = async (id: string, fn: () => Promise<void>) => {
+    setBusyId(id);
+    setError(null);
     try {
-      const updated = await talentforgeApi.joinCollaboration(id);
-      postsApi.setData(posts.map((p) => (p.id === id ? updated : p)));
-      setActionError(null);
-      try {
-        confetti({ particleCount: 35, spread: 60 });
-      } catch {
-        // ignore
-      }
+      await fn();
     } catch (e) {
-      setActionError((e as Error).message);
+      setError((e as Error).message);
+    } finally {
+      setBusyId(null);
     }
   };
 
-  const handleCreatePost = async (e: React.FormEvent) => {
+  const sendRequest = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title) return;
-    try {
+    if (!joining) return;
+    run(joining.id, async () => {
+      replace(await talentforgeApi.requestToJoinCollaboration(joining.id, joinMessage.trim() || undefined));
+      setJoining(null);
+    });
+  };
+
+  const withdraw = (p: CollaborationPost) =>
+    run(p.id, async () => replace(await talentforgeApi.withdrawCollaborationRequest(p.id)));
+
+  const openRequests = (p: CollaborationPost) => {
+    setManaging(p);
+    setRequests(null);
+    talentforgeApi.getCollaborationRequests(p.id).then(setRequests).catch((e) => setError(e.message));
+  };
+
+  const decide = (r: CollabJoinRequest, accept: boolean) =>
+    run(r.id, async () => {
+      setRequests(await talentforgeApi.decideCollaborationRequest(r.id, accept));
+      await postsApi.reload(); // member counts and pending badges change
+    });
+
+  const create = (e: React.FormEvent) => {
+    e.preventDefault();
+    run('create', async () => {
       const created = await talentforgeApi.createCollaborationPost({
-        title,
-        domain,
-        description,
-        maxMembers: 4,
-        lookingFor: lookingFor.split(',').map((s) => s.trim()).filter(Boolean),
-        tags: [domain],
+        title: form.title,
+        domain: form.domain,
+        description: form.description,
+        maxMembers: Math.max(2, Number(form.maxMembers) || 4),
+        lookingFor: form.lookingFor.split(',').map((s) => s.trim()).filter(Boolean),
+        tags: [form.domain],
       });
       postsApi.setData([created, ...posts]);
-    } catch (err) {
-      setActionError((err as Error).message);
+      setCreating(false);
+      setForm({ title: '', domain: DOMAINS[0], description: '', lookingFor: '', maxMembers: '4' });
+    });
+  };
+
+  const mine = posts.filter((p) => p.isOwner || p.isMember);
+  const requested = posts.filter((p) => !p.isMember && p.myRequestStatus);
+  const pendingForMe = posts.reduce((n, p) => n + (p.pendingRequests || 0), 0);
+  const list = tab === 'mine' ? mine : tab === 'requests' ? requested : posts;
+
+  const action = (p: CollaborationPost) => {
+    const busy = busyId === p.id;
+    if (p.isOwner) {
+      return (
+        <Button size="sm" variant={p.pendingRequests ? 'primary' : 'secondary'} onClick={() => openRequests(p)}>
+          <Inbox className="w-3.5 h-3.5" /> Join requests
+          {!!p.pendingRequests && <span className="ml-1 bg-white/25 rounded-full px-1.5">{p.pendingRequests}</span>}
+        </Button>
+      );
     }
-    setIsCreateModalOpen(false);
-    setTitle('');
-    setDescription('');
-    setLookingFor('');
+    if (p.isMember) {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg">
+          <Check className="w-3.5 h-3.5" /> Member
+        </span>
+      );
+    }
+    if (p.myRequestStatus === 'pending') {
+      return (
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg">
+            <Clock className="w-3.5 h-3.5" /> Awaiting approval
+          </span>
+          <Button size="sm" variant="ghost" busy={busy} onClick={() => withdraw(p)}>
+            Withdraw
+          </Button>
+        </div>
+      );
+    }
+    if (p.currentMembers >= p.maxMembers) {
+      return <span className="text-xs font-semibold text-slate-400">Team full</span>;
+    }
+    return (
+      <Button
+        size="sm"
+        busy={busy}
+        onClick={() => {
+          setJoining(p);
+          setJoinMessage('');
+          setError(null);
+        }}
+      >
+        <Send className="w-3.5 h-3.5" /> {p.myRequestStatus === 'declined' ? 'Request again' : 'Request to join'}
+      </Button>
+    );
   };
 
   return (
-    <div className="min-h-screen bg-white py-8 lg:py-12">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8 text-left">
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="max-w-2xl">
-            <p className="text-xs font-bold uppercase tracking-wider text-teal-600 mb-2">
-              Cross-Disciplinary Team Builder
-            </p>
-            <h1 className="text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-              Collaborate & Build Teams
-            </h1>
-            <p className="text-base text-slate-600 mt-2">
-              Ambitious hackathon and capstone projects require balanced teams. Connect with frontend architects, machine learning researchers, and cloud systems engineers.
-            </p>
-          </div>
+    <div>
+      <PageHeader
+        title="Collaborate & Build Teams"
+        subtitle="Find teammates for hackathons and capstones. Joining a team needs the creator's approval — send a request and they'll accept or decline."
+        actions={
+          <Button onClick={() => setCreating(true)}>
+            <Plus className="w-4 h-4" /> Post a team
+          </Button>
+        }
+      />
 
-          <button
-            onClick={() => (user ? setIsCreateModalOpen(true) : onOpenAuth('student'))}
-            className="self-start md:self-auto px-5 py-3 text-xs font-semibold text-white bg-teal-600 hover:bg-teal-700 rounded-xl shadow-xs transition-colors flex items-center gap-2"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Post Collaboration Request</span>
-          </button>
-        </div>
-
-        {actionError && <p className="text-xs text-rose-600">{actionError}</p>}
-        {postsApi.loading && !postsApi.data && <LoadingState />}
-        {postsApi.error && <ErrorState message={postsApi.error} onRetry={postsApi.reload} />}
-
-        {/* Posts List */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {posts.map((post) => {
-            const hasApplied = !!post.isMember;
-            const isFull = post.currentMembers >= post.maxMembers;
-            return (
-              <div
-                key={post.id}
-                className="bg-white rounded-3xl border border-slate-200 shadow-xs hover:shadow-xl hover:border-teal-400 transition-all p-6 flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs font-semibold text-teal-700 bg-teal-50 px-2.5 py-0.5 rounded-full">
-                      {post.domain}
-                    </span>
-                    <span className="text-xs font-mono text-slate-400">
-                      {post.currentMembers} / {post.maxMembers} Members
-                    </span>
-                  </div>
-
-                  <h3 className="text-lg font-bold text-slate-900 mb-2">
-                    {post.title}
-                  </h3>
-                  <p className="text-xs text-slate-600 leading-relaxed line-clamp-3 mb-4">
-                    {post.description}
-                  </p>
-
-                  {/* Looking For */}
-                  <div className="py-2.5 border-t border-slate-100 mb-4">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-                      Seeking Roles:
-                    </p>
-                    <div className="space-y-1.5">
-                      {post.lookingFor.map((role, idx) => (
-                        <div
-                          key={idx}
-                          className="px-2.5 py-1 bg-slate-50 rounded-lg text-xs font-medium text-slate-800 border border-slate-100 flex items-center justify-between"
-                        >
-                          <span>{role}</span>
-                          <span className="text-[10px] text-teal-600 font-bold">Open</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Creator */}
-                  <div className="flex items-center gap-2.5 text-xs text-slate-500 pt-2 border-t border-slate-100">
-                    <Avatar src={post.creatorAvatar} name={post.creatorName} className="w-7 h-7 rounded-full" textClass="text-[9px]" />
-                    <div>
-                      <span className="font-semibold text-slate-800 block text-[11px]">
-                        {post.creatorName}
-                      </span>
-                      <span className="text-[10px] text-slate-400">
-                        {post.creatorCollege}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-[11px] text-slate-400 font-mono">
-                    {timeAgo(post.postedDate)}
-                  </span>
-
-                  <button
-                    disabled={hasApplied || isFull}
-                    onClick={() => handleApply(post.id)}
-                    className={`px-4 py-2 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 ${
-                      hasApplied
-                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                        : 'bg-teal-600 text-white hover:bg-teal-700 shadow-xs'
-                    }`}
-                  >
-                    {hasApplied ? (
-                      <>
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Joined</span>
-                      </>
-                    ) : (
-                      <>
-                        <Send className="w-3.5 h-3.5" />
-                        <span>{isFull ? 'Team Full' : 'Join Team'}</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+      <div className="mb-5">
+        <Tabs
+          active={tab}
+          onChange={setTab}
+          tabs={[
+            { key: 'explore', label: 'Explore teams', count: posts.length },
+            { key: 'mine', label: pendingForMe ? `My teams · ${pendingForMe} new` : 'My teams', count: mine.length },
+            { key: 'requests', label: 'My requests', count: requested.length },
+          ]}
+        />
       </div>
 
-      {/* Create Modal */}
-      {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-200 p-6 text-left space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-lg font-bold text-slate-900">Post Team Request</h3>
-                <p className="text-xs text-slate-500">Find complementary talent across universities</p>
-              </div>
-              <button
-                onClick={() => setIsCreateModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
-              >
-                <X className="w-4 h-4" />
-              </button>
+      {error && !joining && !managing && !creating && <div className="mb-4"><FormError message={error} /></div>}
+      {postsApi.loading && !postsApi.data && <LoadingState />}
+      {postsApi.error && <ErrorState message={postsApi.error} onRetry={postsApi.reload} />}
+      {postsApi.data && list.length === 0 && (
+        <EmptyState
+          title={tab === 'mine' ? 'You are not in any team yet' : tab === 'requests' ? 'No join requests sent' : 'No teams yet'}
+          hint={tab === 'explore' ? 'Post the first team idea.' : undefined}
+        />
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {list.map((p) => (
+          <div key={p.id} className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 flex flex-col gap-3 hover:border-teal-300 transition-colors">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full truncate">{p.domain}</span>
+              <span className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-500 shrink-0">
+                <Users className="w-3 h-3" /> {p.currentMembers}/{p.maxMembers}
+              </span>
             </div>
 
-            <form onSubmit={handleCreatePost} className="space-y-3 text-xs">
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">Project Title</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Real-Time Autonomous Drone Mesh Network"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:border-teal-600"
-                />
-              </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-900">{p.title}</h3>
+              <p className="text-xs text-slate-600 leading-relaxed line-clamp-3 mt-1">{p.description}</p>
+            </div>
 
+            {p.lookingFor.length > 0 && (
               <div>
-                <label className="block font-medium text-slate-700 mb-1">Domain</label>
-                <select
-                  value={domain}
-                  onChange={(e) => setDomain(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:border-teal-600"
-                >
-                  <option>AI & Machine Learning</option>
-                  <option>Cloud & Systems</option>
-                  <option>Web & Mobile</option>
-                  <option>Robotics & IoT</option>
-                </select>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Looking for</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {p.lookingFor.map((role) => <SkillChip key={role} name={role} />)}
+                </div>
               </div>
+            )}
 
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">Description</label>
-                <textarea
-                  rows={3}
-                  required
-                  placeholder="Briefly describe what the team will build and what skills are needed..."
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:border-teal-600"
-                />
+            <div className="flex items-center gap-2.5 pt-3 border-t border-slate-100 mt-auto">
+              <Avatar src={p.creatorAvatar} name={p.creatorName} className="w-7 h-7 rounded-full" textClass="text-[9px]" />
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-semibold text-slate-800 truncate">
+                  {p.creatorName}
+                  {p.isOwner && <span className="ml-1.5 text-teal-700">(you)</span>}
+                </p>
+                <p className="text-[10px] text-slate-400 truncate">
+                  {p.creatorCollege} · {timeAgo(p.postedDate)}
+                </p>
               </div>
+            </div>
 
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">Roles Needed (comma-separated)</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Embedded Systems Developer, React Native Lead"
-                  value={lookingFor}
-                  onChange={(e) => setLookingFor(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:border-teal-600"
-                />
-              </div>
-
-              <div className="pt-3 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsCreateModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 text-xs font-semibold text-white bg-teal-600 hover:bg-teal-700 rounded-lg shadow-xs"
-                >
-                  Publish Request
-                </button>
-              </div>
-            </form>
+            <div className="flex items-center justify-between gap-2">
+              {p.myRequestStatus === 'declined' && !p.isMember ? <StatusPill status="rejected" label="Declined" /> : <span />}
+              {action(p)}
+            </div>
           </div>
+        ))}
+      </div>
+
+      {/* Request to join */}
+      <Modal
+        open={!!joining}
+        title={`Request to join: ${joining?.title ?? ''}`}
+        subtitle={`${joining?.creatorName ?? 'The creator'} will review your request and accept or decline it.`}
+        onClose={() => setJoining(null)}
+      >
+        <form onSubmit={sendRequest} className="space-y-3">
+          <Field label="Message to the team creator" hint="Say which role you'd take and what you'd bring.">
+            <TextArea rows={4} value={joinMessage} onChange={(e) => setJoinMessage(e.target.value)} placeholder="I can build the FastAPI backend and set up CI…" />
+          </Field>
+          <FormError message={error} />
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setJoining(null)}>Cancel</Button>
+            <Button type="submit" busy={!!busyId}>
+              <Send className="w-3.5 h-3.5" /> Send request
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Creator: review join requests */}
+      <Modal
+        open={!!managing}
+        title="Join requests"
+        subtitle={managing ? `${managing.title} · ${posts.find((x) => x.id === managing.id)?.currentMembers ?? managing.currentMembers}/${managing.maxMembers} members` : ''}
+        onClose={() => setManaging(null)}
+        wide
+      >
+        <FormError message={error} />
+        {!requests && <LoadingState />}
+        {requests?.length === 0 && <EmptyState title="No requests yet" hint="When someone asks to join, they'll appear here and you'll get a notification." />}
+        <div className="space-y-3">
+          {requests?.map((r) => (
+            <div key={r.id} className="rounded-xl border border-slate-200 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0">
+                  <Avatar src={r.user.avatar} name={r.user.name} className="w-10 h-10 rounded-xl" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-slate-900">{r.user.name}</p>
+                    <p className="text-[11px] text-slate-500 truncate">
+                      {[r.user.headline, r.user.college].filter(Boolean).join(' · ')} · {timeAgo(r.createdAt)}
+                    </p>
+                    {r.user.verifiedSkills.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {r.user.verifiedSkills.slice(0, 5).map((s) => <SkillChip key={s} name={s} verified />)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <StatusPill
+                  status={r.status === 'accepted' ? 'verified' : r.status === 'declined' ? 'rejected' : 'pending'}
+                  label={r.status === 'accepted' ? 'Accepted' : r.status === 'declined' ? 'Declined' : 'Pending'}
+                />
+              </div>
+              {r.message && <p className="text-xs text-slate-700 bg-slate-50 rounded-lg px-3 py-2 mt-3 italic">“{r.message}”</p>}
+              {r.status === 'pending' && (
+                <div className="flex justify-end gap-2 mt-3">
+                  <Button size="sm" variant="danger" busy={busyId === r.id} onClick={() => decide(r, false)}>
+                    <X className="w-3.5 h-3.5" /> Decline
+                  </Button>
+                  <Button size="sm" variant="success" busy={busyId === r.id} onClick={() => decide(r, true)}>
+                    <UserCheck className="w-3.5 h-3.5" /> Accept
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
-      )}
+      </Modal>
+
+      {/* Create team */}
+      <Modal open={creating} title="Post a team" subtitle="Others can request to join; you decide who gets in." onClose={() => setCreating(false)}>
+        <form onSubmit={create} className="space-y-3">
+          <Field label="Project title">
+            <TextInput required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Real-time drone mesh network" />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Domain">
+              <Select value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })}>
+                {DOMAINS.map((d) => <option key={d}>{d}</option>)}
+              </Select>
+            </Field>
+            <Field label="Team size (incl. you)">
+              <TextInput type="number" min={2} max={20} value={form.maxMembers} onChange={(e) => setForm({ ...form, maxMembers: e.target.value })} />
+            </Field>
+          </div>
+          <Field label="Description">
+            <TextArea required value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="What will the team build?" />
+          </Field>
+          <Field label="Roles needed" hint="Comma-separated">
+            <TextInput required value={form.lookingFor} onChange={(e) => setForm({ ...form, lookingFor: e.target.value })} placeholder="Embedded developer, React lead" />
+          </Field>
+          <FormError message={error} />
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setCreating(false)}>Cancel</Button>
+            <Button type="submit" busy={busyId === 'create'}>Publish team</Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };

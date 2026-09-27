@@ -59,3 +59,10 @@ INSERT OR IGNORE INTO notifications(id,user_id,type,title,body,link,created_at) 
 ('ntf_4','rec_ananya','application','New application: Aarav Mehta','Platform Systems Associate at Razorpay','/recruiter/applications',strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 days')),
 ('ntf_5','rec_ananya','message','New message from Aarav Mehta','Thank you! Yes, I am free Tuesday or Wednesday afternoon.','/messages',strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 days')),
 ('ntf_6','teacher_ramesh','verification','New certificate to review','Aarav Mehta submitted PostgreSQL Performance Tuning.','/teacher',strftime('%Y-%m-%dT%H:%M:%SZ','now','-6 hours'));
+
+-- Pending collaboration join requests (the team creator decides)
+INSERT OR IGNORE INTO collaboration_requests(id,post_id,user_id,message,created_at) VALUES
+('creq_1','collab_1','std_rohan','I can own the deployment pipeline and offline sync backend.',strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 hours')),
+('creq_2','collab_2','std_aarav','Happy to build the FastAPI telemetry service and dashboard APIs.',strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 days'));
+INSERT OR IGNORE INTO notifications(id,user_id,type,title,body,link,created_at) VALUES
+('ntf_c1','std_priya','collaboration','Rohan Patel wants to join “AI Healthcare Assistant for Primary Clinics”','I can own the deployment pipeline and offline sync backend.','/collaborate',strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 hours'));
