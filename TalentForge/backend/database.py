@@ -15,6 +15,16 @@ if not DATABASE_PATH.is_absolute():
 
 SCHEMA_FILE = BASE_DIR / "schema.sql"
 SEED_FILE = BASE_DIR / "seed.sql"
+SCHEMA_V2_FILE = BASE_DIR / "schema_v2.sql"
+SEED_V2_FILE = BASE_DIR / "seed_v2.sql"
+
+# Columns added to tables from the original schema (SQLite has no ADD COLUMN IF NOT EXISTS).
+ADDED_COLUMNS = {
+    "verification_requests": [("skill_id", "TEXT REFERENCES skills(id) ON DELETE SET NULL"),
+                              ("certificate_id", "TEXT REFERENCES certificates(id) ON DELETE SET NULL")],
+    "certificates": [("skill_id", "TEXT REFERENCES skills(id) ON DELETE SET NULL")],
+    "jobs": [("description", "TEXT"), ("location", "TEXT")],
+}
 
 # Every seeded account (students, teachers, recruiters, admin) gets this password.
 DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "demo1234")
@@ -53,6 +63,19 @@ def migrate(conn: sqlite3.Connection) -> None:
         )
         conn.execute("PRAGMA foreign_keys = ON")
 
+    # v2: profile sections, recruitment workflow, messaging, notifications
+    for table, columns in ADDED_COLUMNS.items():
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    is_new = not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='applications'").fetchone()
+    conn.executescript(SCHEMA_V2_FILE.read_text(encoding="utf-8"))
+    # Only seed demo workflow data into databases that still contain the demo accounts.
+    if is_new and conn.execute("SELECT 1 FROM users WHERE id='std_aarav'").fetchone():
+        conn.executescript(SEED_V2_FILE.read_text(encoding="utf-8"))
+    conn.commit()
+
 
 def init_db(reset: bool = False) -> None:
     """Create the schema and seed data. With reset=False an existing DB is only migrated."""
@@ -65,10 +88,13 @@ def init_db(reset: bool = False) -> None:
         finally:
             conn.close()
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if reset:
+        DATABASE_PATH.unlink(missing_ok=True)
     conn = connect()
     try:
         conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
         conn.executescript(SEED_FILE.read_text(encoding="utf-8"))
+        migrate(conn)
         demo_hash = hash_password(DEMO_PASSWORD)
         conn.execute("UPDATE users SET password_hash=? WHERE email IS NOT NULL", (demo_hash,))
         conn.commit()

@@ -36,3 +36,21 @@ export function initials(name: string): string {
 export function formatNumber(n: number | undefined): string {
   return (n ?? 0).toLocaleString('en-US');
 }
+
+/** "2026-10-06T10:00:00Z" -> "Tue, Oct 6, 3:30 PM" in the viewer's timezone */
+export function formatDateTime(iso?: string | null): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+/** Parses the current page's query string (e.g. ?job=abc). */
+export function queryParam(name: string): string | null {
+  return new URLSearchParams(window.location.search).get(name);
+}
+
+/** Joins non-empty parts, dropping duplicates: ("Remote", "Remote") -> "Remote". */
+export function joinParts(parts: (string | null | undefined)[], sep = ' · '): string {
+  return Array.from(new Set(parts.filter(Boolean) as string[])).join(sep);
+}

@@ -3,7 +3,7 @@ import { ArrowUpRight } from 'lucide-react';
 
 interface FooterProps {
   onNavigate: (path: string) => void;
-  onOpenAuth: (role?: string) => void;
+  onOpenAuth: (role?: string, tab?: 'signin' | 'register') => void;
 }
 
 export const Footer: React.FC<FooterProps> = ({ onNavigate, onOpenAuth }) => {
@@ -40,10 +40,10 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, onOpenAuth }) => {
             <ul className="space-y-2 text-xs">
               <li>
                 <button
-                  onClick={() => onNavigate('/discover')}
+                  onClick={() => onOpenAuth('recruiter', 'register')}
                   className="hover:text-blue-600 transition-colors text-left"
                 >
-                  Discover Talent
+                  Discover Talent (recruiters)
                 </button>
               </li>
               <li>
@@ -73,44 +73,28 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, onOpenAuth }) => {
             </ul>
           </div>
 
-          {/* Portals Column */}
+          {/* Get started Column — sign-up entry points; the role comes from the account */}
           <div className="space-y-3">
-            <p className="text-xs font-bold uppercase tracking-wider text-slate-900">Portals</p>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-900">Get started</p>
             <ul className="space-y-2 text-xs">
+              {[
+                ['student', 'Join as a student', 'hover:text-blue-600'],
+                ['recruiter', 'Hire as a recruiter', 'hover:text-cyan-600'],
+                ['teacher', 'Faculty sign-up', 'hover:text-purple-600'],
+              ].map(([role, label, hover]) => (
+                <li key={role}>
+                  <button
+                    onClick={() => onOpenAuth(role, 'register')}
+                    className={`${hover} transition-colors text-left flex items-center gap-1`}
+                  >
+                    <span>{label}</span>
+                    <ArrowUpRight className="w-3 h-3 text-slate-400" />
+                  </button>
+                </li>
+              ))}
               <li>
-                <button
-                  onClick={() => onNavigate('/student')}
-                  className="hover:text-blue-600 transition-colors text-left flex items-center gap-1"
-                >
-                  <span>Student Portal</span>
-                  <ArrowUpRight className="w-3 h-3 text-slate-400" />
-                </button>
-              </li>
-              <li>
-                <button
-                  onClick={() => onNavigate('/teacher')}
-                  className="hover:text-purple-600 transition-colors text-left flex items-center gap-1"
-                >
-                  <span>Teacher Portal</span>
-                  <ArrowUpRight className="w-3 h-3 text-slate-400" />
-                </button>
-              </li>
-              <li>
-                <button
-                  onClick={() => onNavigate('/admin')}
-                  className="hover:text-teal-600 transition-colors text-left flex items-center gap-1"
-                >
-                  <span>Admin Portal</span>
-                  <ArrowUpRight className="w-3 h-3 text-slate-400" />
-                </button>
-              </li>
-              <li>
-                <button
-                  onClick={() => onNavigate('/recruiter')}
-                  className="hover:text-cyan-600 transition-colors text-left flex items-center gap-1"
-                >
-                  <span>Recruiter Portal</span>
-                  <ArrowUpRight className="w-3 h-3 text-slate-400" />
+                <button onClick={() => onOpenAuth()} className="hover:text-blue-600 transition-colors text-left">
+                  Sign in
                 </button>
               </li>
             </ul>
@@ -136,7 +120,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, onOpenAuth }) => {
               </li>
               <li>
                 <button
-                  onClick={() => onOpenAuth('student')}
+                  onClick={() => onOpenAuth('student', 'register')}
                   className="text-blue-600 font-medium hover:underline"
                 >
                   Student Registration

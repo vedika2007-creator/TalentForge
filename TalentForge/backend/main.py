@@ -2,21 +2,19 @@ import json
 import os
 import sqlite3
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 import bcrypt
-import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 
-from database import DATABASE_PATH, connect, hash_password, init_db
-
-JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
-JWT_ALGORITHM = "HS256"
-TOKEN_HOURS = 24
-
+from core import (db, get_current_user, get_optional_user, issue_token, many,
+                  now_iso, one, public_user, require_roles, resolve_user)
+from database import DATABASE_PATH, hash_password, init_db
+from workflow import apply_verification_effects, notify, notify_teachers, router as workflow_router
+from serializers import (JOB_SELECT, PROJECT_SELECT, get_or_create_skill,
+                         serialize_job, serialize_project, serialize_student, serialize_verification)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -41,116 +39,6 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
-# DB helpers
-# ---------------------------------------------------------------------------
-
-def db():
-    conn = connect()
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-
-def one(conn, sql, params=()):
-    row = conn.execute(sql, params).fetchone()
-    return dict(row) if row else None
-
-
-def many(conn, sql, params=()):
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
-
-
-def now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def month_year(value: Optional[str]):
-    """'2026-08-01' -> 'Aug 2026'"""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value[:10]).strftime("%b %Y")
-    except ValueError:
-        return value
-
-
-def long_date(value: Optional[str]):
-    """'2026-08-18' -> 'August 18, 2026'"""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value[:10]).strftime("%B %d, %Y")
-    except ValueError:
-        return value
-
-
-def resolve_user(conn, value: str):
-    return one(conn, "SELECT * FROM users WHERE id=? OR external_id=? OR email=?", (value, value, value))
-
-
-def public_user(u: dict):
-    return {
-        "id": u["id"],
-        "name": u["name"],
-        "email": u["email"],
-        "role": u["role"],
-        "avatar": u["avatar_url"],
-        "college": u["college"],
-        "department": u["department"],
-        "headline": u["headline"],
-        "isActive": bool(u["is_active"]),
-        "createdAt": u["created_at"],
-    }
-
-
-def issue_token(user: dict):
-    exp = datetime.now(timezone.utc) + timedelta(hours=TOKEN_HOURS)
-    token = jwt.encode({"sub": user["id"], "role": user["role"], "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
-    return {"access_token": token, "token_type": "bearer", "user": public_user(user)}
-
-
-# ---------------------------------------------------------------------------
-# Auth dependencies
-# ---------------------------------------------------------------------------
-
-def _user_from_header(authorization: Optional[str], conn):
-    if not authorization or not authorization.lower().startswith("bearer "):
-        return None
-    token = authorization.split(" ", 1)[1]
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except jwt.PyJWTError:
-        raise HTTPException(401, "Invalid or expired token")
-    user = one(conn, "SELECT * FROM users WHERE id=? AND is_active=1", (payload.get("sub"),))
-    if not user:
-        raise HTTPException(401, "User not found or suspended")
-    return user
-
-
-def get_current_user(authorization: Optional[str] = Header(default=None), conn=Depends(db)):
-    user = _user_from_header(authorization, conn)
-    if not user:
-        raise HTTPException(401, "Authentication required")
-    return user
-
-
-def get_optional_user(authorization: Optional[str] = Header(default=None), conn=Depends(db)):
-    try:
-        return _user_from_header(authorization, conn)
-    except HTTPException:
-        return None
-
-
-def require_roles(*roles):
-    def dep(user=Depends(get_current_user)):
-        if user["role"] not in roles:
-            raise HTTPException(403, "Insufficient permissions")
-        return user
-    return dep
-
-
-# ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
 
@@ -167,7 +55,7 @@ class RegisterIn(BaseModel):
     name: str = Field(min_length=1)
     email: EmailStr
     password: str = Field(min_length=6)
-    role: Role = "student"
+    role: Literal["student", "recruiter", "teacher"] = "student"
     college: Optional[str] = None
     department: Optional[str] = None
     batch_year: Optional[int] = None
@@ -219,9 +107,11 @@ class VerificationUpdate(BaseModel):
 
 
 class JobIn(BaseModel):
-    title: str
+    title: str = Field(min_length=1)
     company: Optional[str] = None
     department: Optional[str] = None
+    location: Optional[str] = None
+    description: Optional[str] = None
     min_confidence: float = 0
     preferred_projects: int = 0
     require_faculty_verification: bool = False
@@ -231,173 +121,6 @@ class JobIn(BaseModel):
 
 class UserStatusIn(BaseModel):
     is_active: bool
-
-
-# ---------------------------------------------------------------------------
-# Serializers (DB rows -> frontend camelCase types in src/types/index.ts)
-# ---------------------------------------------------------------------------
-
-def serialize_student(conn, student_id: str):
-    u = one(conn, "SELECT * FROM student_profiles WHERE id=?", (student_id,))
-    if not u:
-        return None
-    skills = many(conn, """
-        SELECT ss.*, s.name skill_name, s.category, v.name verifier_name
-        FROM student_skills ss JOIN skills s ON s.id=ss.skill_id
-        LEFT JOIN users v ON v.id=ss.verifier_id
-        WHERE ss.student_id=? ORDER BY ss.confidence_score DESC""", (student_id,))
-    featured = many(conn, "SELECT project_id FROM project_members WHERE student_id=? AND is_featured=1", (student_id,))
-    return {
-        "id": u["id"],
-        "name": u["name"],
-        "headline": u["headline"] or "",
-        "bio": u["bio"] or "",
-        "avatar": u["avatar"] or "",
-        "college": u["college"] or "",
-        "department": u["department"] or "",
-        "batchYear": u["batch_year"],
-        "overallScore": round(u["overall_score"] or 0),
-        "location": u["location"] or "",
-        "githubUsername": u["github_username"] or "",
-        "targetRole": u["target_role"] or "",
-        "availableForHire": bool(u["available_for_hire"]),
-        "projectCount": u["project_count"],
-        "verifiedCount": u["verified_count"],
-        "totalGithubCommits": u["total_github_commits"],
-        "repositoryCount": u["repository_count"],
-        "featuredProjects": [f["project_id"] for f in featured],
-        "skills": [{
-            "id": x["id"],
-            "skillName": x["skill_name"],
-            "category": x["category"],
-            "confidenceScore": round(x["confidence_score"] or 0),
-            "status": x["status"],
-            "evidenceSources": {
-                "projectsCount": x["projects_count"],
-                "githubContributions": x["github_contributions"],
-                "assessmentsCompleted": x["assessments_completed"],
-                "certificatesCount": x["certificates_count"],
-                "facultyVerified": bool(x["faculty_verified"]),
-                "verifierName": x["verifier_name"],
-                "verifiedDate": month_year(x["verified_at"]),
-            },
-            "weightBreakdown": {
-                "projects": x["projects_weight"] or 0,
-                "github": x["github_weight"] or 0,
-                "assessment": x["assessment_weight"] or 0,
-                "faculty": x["faculty_weight"] or 0,
-            },
-        } for x in skills],
-    }
-
-
-PROJECT_SELECT = """
-    SELECT p.*,
-        u.id author_id, u.name author_name, u.avatar_url author_avatar, pm.role member_role,
-        v.name verified_by_name, v.headline verified_by_title,
-        (SELECT json_group_array(name) FROM (SELECT s.name FROM project_technologies pt JOIN skills s ON s.id=pt.skill_id
-            WHERE pt.project_id=p.id ORDER BY s.name)) technologies,
-        (SELECT json_group_array(highlight) FROM (SELECT highlight FROM project_highlights ph
-            WHERE ph.project_id=p.id ORDER BY display_order)) highlights
-    FROM projects p
-    LEFT JOIN project_members pm ON pm.project_id=p.id AND pm.student_id=(
-        SELECT student_id FROM project_members WHERE project_id=p.id ORDER BY is_featured DESC LIMIT 1)
-    LEFT JOIN users u ON u.id=pm.student_id
-    LEFT JOIN users v ON v.id=p.verified_by
-"""
-
-
-def serialize_project(r: dict):
-    verified_by = r["verified_by_name"]
-    if verified_by and r["verified_by_title"]:
-        verified_by = f"{verified_by} ({r['verified_by_title']})"
-    return {
-        "id": r["id"],
-        "title": r["title"],
-        "tagline": r["tagline"] or "",
-        "description": r["description"] or "",
-        "authorId": r["author_id"] or "",
-        "authorName": r["author_name"] or "",
-        "authorAvatar": r["author_avatar"] or "",
-        "role": r["member_role"] or "",
-        "technologies": json.loads(r["technologies"] or "[]"),
-        "domain": r["domain"],
-        "isFacultyVerified": bool(r["is_faculty_verified"]),
-        "verifiedBy": verified_by,
-        "verificationDate": long_date(r["verification_date"]),
-        "githubUrl": r["github_url"] or "",
-        "demoUrl": r["demo_url"],
-        "metrics": {"stars": r["stars"], "commits": r["commits"], "contributors": r["contributors"]},
-        "highlights": json.loads(r["highlights"] or "[]"),
-        "createdAt": r["created_at"],
-    }
-
-
-def serialize_verification(r: dict):
-    return {
-        "id": r["id"],
-        "studentId": r["student_id"],
-        "studentName": r["student_name"],
-        "studentAvatar": r["student_avatar"] or "",
-        "studentDepartment": r["student_department"] or "",
-        "projectId": r["project_id"],
-        "skillOrProjectTitle": r["title"],
-        "type": r["verification_type"],
-        "submittedAt": r["submitted_at"],
-        "status": r["status"],
-        "reviewedAt": r["reviewed_at"],
-        "reviewerName": r["reviewer_name"],
-        "notes": r["notes"],
-        "submittedEvidence": {
-            "githubRepo": r["github_repo_url"],
-            "projectReportUrl": r["project_report_url"],
-            "demoUrl": r["demo_url"],
-            "certificateIssuer": r["certificate_issuer"],
-            "assessmentScore": r["assessment_score"],
-        },
-    }
-
-
-def serialize_job(r: dict):
-    return {
-        "id": r["id"],
-        "title": r["title"],
-        "company": r["company"] or "",
-        "department": r["department"] or "",
-        "requiredSkills": json.loads(r["required_skills"] or "[]"),
-        "minConfidence": r["min_confidence"],
-        "preferredProjects": r["preferred_projects"],
-        "requireFacultyVerification": bool(r["require_faculty_verification"]),
-        "locationType": r["location_type"],
-        "createdAt": r["created_at"],
-    }
-
-
-JOB_SELECT = """
-    SELECT j.*, (SELECT json_group_array(s.name) FROM job_required_skills jrs JOIN skills s ON s.id=jrs.skill_id
-        WHERE jrs.job_id=j.id) required_skills
-    FROM jobs j
-"""
-
-SKILL_CATEGORY_HINTS = {
-    "Frontend": ["react", "vue", "angular", "tailwind", "css", "html", "next", "svelte", "typescript", "javascript"],
-    "AI/ML": ["ml", "learning", "tensorflow", "pytorch", "pandas", "numpy", "opencv", "vision", "nlp", "llm", "ai"],
-    "DevOps": ["docker", "kubernetes", "k8s", "ci", "cd", "terraform", "aws", "gcp", "azure", "prometheus", "grafana", "linux"],
-    "Database": ["sql", "postgres", "mysql", "mongo", "sqlite", "database", "redis"],
-    "Mobile": ["flutter", "android", "ios", "swift", "kotlin", "react native"],
-}
-
-
-def get_or_create_skill(conn, name: str):
-    name = name.strip()
-    if not name:
-        return None
-    s = one(conn, "SELECT id FROM skills WHERE LOWER(name)=LOWER(?)", (name,))
-    if s:
-        return s["id"]
-    lower = name.lower()
-    category = next((cat for cat, hints in SKILL_CATEGORY_HINTS.items() if any(h in lower for h in hints)), "Backend")
-    return conn.execute("INSERT INTO skills(name,category) VALUES (?,?) RETURNING id", (name, category)).fetchone()["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -416,9 +139,9 @@ def login(data: LoginIn, conn=Depends(db)):
     if not user or not user["password_hash"] or not bcrypt.checkpw(data.password.encode(), user["password_hash"].encode()):
         raise HTTPException(401, "Invalid email or password")
     if not user["is_active"]:
-        raise HTTPException(403, "This account has been suspended")
-    if data.role and user["role"] != data.role:
-        raise HTTPException(403, f"This account is registered as a {user['role']}, not a {data.role}")
+        if user["role"] == "teacher" and not one(conn, "SELECT 1 FROM verification_requests WHERE reviewed_by=?", (user["id"],)):
+            raise HTTPException(403, "Your faculty account is awaiting administrator approval")
+        raise HTTPException(403, "This account has been suspended. Contact the platform administrator.")
     return issue_token(user)
 
 
@@ -426,10 +149,21 @@ def login(data: LoginIn, conn=Depends(db)):
 def register(data: RegisterIn, conn=Depends(db)):
     if one(conn, "SELECT id FROM users WHERE email=?", (data.email,)):
         raise HTTPException(409, "Email already registered")
-    user = one(conn, """INSERT INTO users(name,email,password_hash,role,college,department,batch_year,available_for_hire)
-        VALUES (?,?,?,?,?,?,?,?) RETURNING *""",
+    needs_approval = data.role == "teacher"
+    user = one(conn, """INSERT INTO users(name,email,password_hash,role,college,department,batch_year,available_for_hire,is_active)
+        VALUES (?,?,?,?,?,?,?,?,?) RETURNING *""",
         (data.name, data.email, hash_password(data.password), data.role, data.college, data.department,
-         data.batch_year, 1 if data.role == "student" else 0))
+         data.batch_year, 1 if data.role == "student" else 0, 0 if needs_approval else 1))
+    if needs_approval:
+        for admin in many(conn, "SELECT id FROM users WHERE role='admin' AND is_active=1"):
+            notify(conn, admin["id"], "account", f"Faculty account awaiting approval: {data.name}",
+                   f"{data.email}" + (f" — {data.college}" if data.college else ""), "/admin/users")
+        conn.commit()
+        return {"pending_approval": True,
+                "message": "Faculty account created. An administrator must approve it before you can sign in."}
+    notify(conn, user["id"], "account", "Welcome to TalentForge!",
+           "Complete your profile to get discovered." if data.role == "student" else "Post your first job to start hiring.",
+           "/student/profile" if data.role == "student" else "/recruiter/jobs")
     conn.commit()
     return issue_token(user)
 
@@ -484,7 +218,8 @@ def analytics(conn=Depends(db)):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/students")
-def students(skill: Optional[str] = None, minScore: Optional[float] = None, role: Optional[str] = None, conn=Depends(db)):
+def students(skill: Optional[str] = None, minScore: Optional[float] = None, role: Optional[str] = None,
+             user=Depends(require_roles("recruiter", "teacher", "admin")), conn=Depends(db)):
     rows = many(conn, """SELECT id FROM student_profiles sp
         WHERE is_active=1
         AND (? IS NULL OR EXISTS (SELECT 1 FROM student_skills ss JOIN skills s ON s.id=ss.skill_id
@@ -510,29 +245,11 @@ def update_me(data: ProfileUpdate, user=Depends(require_roles("student")), conn=
     return serialize_student(conn, user["id"])
 
 
-@app.get("/api/v1/students/me/opportunities")
-def my_opportunities(user=Depends(require_roles("student")), conn=Depends(db)):
-    """Rank open jobs by how well the student's evidenced skills cover each job's required skills."""
-    my_skills = {r["name"].lower(): r for r in many(conn, """SELECT s.name, ss.confidence_score, ss.faculty_verified
-        FROM student_skills ss JOIN skills s ON s.id=ss.skill_id WHERE ss.student_id=?""", (user["id"],))}
-    out = []
-    for job in many(conn, JOB_SELECT + " WHERE j.is_active=1"):
-        j = serialize_job(job)
-        req = j["requiredSkills"]
-        if not req:
-            continue
-        matched = [s for s in req if s.lower() in my_skills]
-        coverage = len(matched) / len(req)
-        avg_conf = sum(my_skills[s.lower()]["confidence_score"] for s in matched) / len(matched) if matched else 0
-        score = round(coverage * 60 + avg_conf * 0.4)
-        out.append({**j, "match": score, "matchedSkills": matched, "missingSkills": [s for s in req if s not in matched]})
-    out.sort(key=lambda x: x["match"], reverse=True)
-    return out
-
-
 @app.get("/api/v1/students/{student_id}")
-def get_student(student_id: str, conn=Depends(db)):
+def get_student(student_id: str, user=Depends(get_current_user), conn=Depends(db)):
     u = resolve_user(conn, student_id)
+    if user["role"] == "student" and (not u or u["id"] != user["id"]):
+        raise HTTPException(403, "Students can only view their own profile")
     if not u or u["role"] != "student":
         raise HTTPException(404, "Student not found")
     return serialize_student(conn, u["id"])
@@ -583,6 +300,7 @@ def create_project(data: ProjectIn, user=Depends(require_roles("student")), conn
         VALUES (?,?,?,'project',?) RETURNING id""", (user["id"], p["id"], data.title, data.description))
     conn.execute("INSERT INTO verification_evidence(request_id,github_repo_url,demo_url) VALUES (?,?,?)",
                  (req["id"], data.github_url, data.demo_url))
+    notify_teachers(conn, user, "New project to review", f"{user['name']} submitted {data.title}.")
     conn.commit()
     return serialize_project(one(conn, PROJECT_SELECT + " WHERE p.id=?", (p["id"],)))
 
@@ -592,8 +310,13 @@ def create_project(data: ProjectIn, user=Depends(require_roles("student")), conn
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/verifications")
-def verifications(status: Optional[str] = None, studentId: Optional[str] = None, conn=Depends(db)):
+def verifications(status: Optional[str] = None, studentId: Optional[str] = None, type: Optional[str] = None,
+                  user=Depends(require_roles("student", "teacher", "admin")), conn=Depends(db)):
+    if user["role"] == "student":
+        studentId = user["id"]
     where, params = ["1=1"], []
+    if type:
+        where.append("verification_type=?"); params.append(type)
     if status:
         where.append("status=?"); params.append(status)
     if studentId:
@@ -613,14 +336,7 @@ def update_verification(request_id: str, data: VerificationUpdate, user=Depends(
                           if data.status == "approved" else "Changes requested by faculty mentor.")
     conn.execute("UPDATE verification_requests SET status=?, notes=?, reviewed_by=?, reviewed_at=? WHERE id=?",
                  (data.status, note, user["id"], now_iso(), req["id"]))
-    # Approving a project request marks the project itself as faculty-verified.
-    if req["project_id"]:
-        if data.status == "approved":
-            conn.execute("UPDATE projects SET is_faculty_verified=1, verified_by=?, verification_date=date('now') WHERE id=?",
-                         (user["id"], req["project_id"]))
-        else:
-            conn.execute("UPDATE projects SET is_faculty_verified=0, verified_by=NULL, verification_date=NULL WHERE id=?",
-                         (req["project_id"],))
+    apply_verification_effects(conn, {**req, "notes": note}, data.status, user)
     conn.commit()
     return serialize_verification(one(conn, "SELECT * FROM pending_verifications WHERE id=?", (req["id"],)))
 
@@ -720,6 +436,9 @@ def toggle_shortlist(data: ShortlistIn, user=Depends(require_roles("recruiter"))
         conn.execute("DELETE FROM recruiter_shortlists WHERE recruiter_id=? AND student_id=? AND job_id IS ?", params)
     else:
         conn.execute("INSERT INTO recruiter_shortlists(recruiter_id,student_id,job_id) VALUES (?,?,?)", params)
+        company = user["college"] or "a company"
+        notify(conn, student["id"], "shortlist", f"A recruiter from {company} shortlisted your profile",
+               f"{user['name']} added you to their talent pool.", "/student/opportunities")
     conn.commit()
     return shortlist(user, conn)
 
@@ -734,10 +453,10 @@ def jobs(mine: bool = False, user=Depends(get_current_user), conn=Depends(db)):
 
 @app.post("/api/v1/jobs", status_code=201)
 def create_job(data: JobIn, user=Depends(require_roles("recruiter")), conn=Depends(db)):
-    job = one(conn, """INSERT INTO jobs(recruiter_id,company,title,department,min_confidence,preferred_projects,
-        require_faculty_verification,location_type) VALUES (?,?,?,?,?,?,?,?) RETURNING id""",
-        (user["id"], data.company or user["college"], data.title, data.department, data.min_confidence,
-         data.preferred_projects, int(data.require_faculty_verification), data.location_type))
+    job = one(conn, """INSERT INTO jobs(recruiter_id,company,title,department,location,description,min_confidence,
+        preferred_projects,require_faculty_verification,location_type) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id""",
+        (user["id"], data.company or user["college"], data.title, data.department, data.location, data.description,
+         data.min_confidence, data.preferred_projects, int(data.require_faculty_verification), data.location_type))
     for name in data.required_skills:
         skill_id = get_or_create_skill(conn, name)
         if skill_id:
@@ -748,7 +467,7 @@ def create_job(data: JobIn, user=Depends(require_roles("recruiter")), conn=Depen
 
 @app.get("/api/v1/matches")
 def matches(skill: Optional[str] = None, min_confidence: float = 0, require_verified: bool = False,
-            user=Depends(get_current_user), conn=Depends(db)):
+            user=Depends(require_roles("recruiter", "admin")), conn=Depends(db)):
     rows = many(conn, """SELECT u.id, u.name, u.target_role, u.overall_score, ss.confidence_score, s.name skill_name,
             ss.faculty_verified
         FROM users u JOIN student_skills ss ON ss.student_id=u.id JOIN skills s ON s.id=ss.skill_id
@@ -782,3 +501,6 @@ def admin_set_status(user_id: str, data: UserStatusIn, user=Depends(require_role
     conn.execute("UPDATE users SET is_active=? WHERE id=?", (int(data.is_active), target["id"]))
     conn.commit()
     return public_user(one(conn, "SELECT * FROM users WHERE id=?", (target["id"],)))
+
+
+app.include_router(workflow_router)
